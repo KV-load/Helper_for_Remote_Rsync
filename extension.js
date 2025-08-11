@@ -13,14 +13,15 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const exec = util.promisify(require('child_process').exec);
-
+const chokidar = require('chokidar');
 
 let AIX_USER = '';
 let AIX_HOST = '';
 let mount_dir = '';
 let keyPath = '';
 let config = '';
-
+let syncedFilePath = null;
+let Open_files = {};
 
 
 function activate(context) {
@@ -87,6 +88,7 @@ function activate(context) {
         // }
     });
 		vscode.window.showInformationMessage('AIX configuration file found.');
+		watchCommandFile();
 	
 	});
 
@@ -101,6 +103,55 @@ function pushToAix(filePath,localfilepath) {
     const rsyncCmd = `rsync -avz -e "ssh -i ${keyPath}" "${localfilepath}" ${remoteTarget}`;
     exec(rsyncCmd).catch(err => console.error(`Push failed: ${err}`));
 }
+
+
+function watchCommandFile() {
+   let  LOCAL_COMMAND_FILE = path.join(mount_dir, '/.sshfs/command.txt');
+    
+    
+    chokidar.watch(LOCAL_COMMAND_FILE).on('change', () => {
+        const target = fs.readFileSync(LOCAL_COMMAND_FILE, 'utf8').trim();
+        if (target) pullFromAix(target);
+    });
+
+    
+
+    // vscode.workspace.onDidSaveTextDocument((doc) => {
+    //     vscode.window.showInformationMessage(`File saved: ${doc.fileName}. ${syncedFilePath ? 'Syncing...' : ''}`);
+    //     console.log(`File saved: ${doc.fileName}`);
+
+    //     if (syncedFilePath && doc.fileName === syncedFilePath) {
+    //         console.log(`File ${doc.fileName} is synced, pushing to AIX...`);
+    //         vscode.window.showInformationMessage(`File saved: ${doc.fileName}`);
+    //         pushToAix(target);
+    //     }
+    // });
+}
+
+async function pullFromAix(remotePath) {
+    const filename = path.basename(remotePath);
+    if (!Open_files.FILES) {
+    Open_files.FILES = {};
+    }
+    Open_files.FILES[filename] = remotePath;
+
+    Open_files['aix_user'] = AIX_USER;
+    Open_files['aix_host'] = AIX_HOST;
+
+    fs.writeFileSync(mount_dir+'/aix_config.json',JSON.stringify(Open_files,null,2), 'utf8');
+
+    const localPath = path.join(mount_dir, filename);
+    const remoteFull = `${AIX_USER}@${AIX_HOST}:${remotePath}`;
+    const rsyncCmd = `rsync -avz -e "ssh -i ${keyPath}" ${remoteFull} ${mount_dir}`;
+    try {
+        await exec(rsyncCmd);
+        syncedFilePath = localPath;
+        exec(`code "${syncedFilePath}"`); // no need to await here
+    } catch (err) {
+        console.error(`Pull failed: ${err}`);
+    }
+}
+
 
 // This method is called when your extension is deactivated
 function deactivate() {}
